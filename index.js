@@ -37,6 +37,30 @@ async function downloadCV() {
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const humanDelay = () => sleep(800 + Math.random() * 1200);
 
+// ─── Déduplication des candidatures (par session) ─────────────────
+const jobsAlreadyApplied = new Set();
+
+// ─── Résoudre les URLs de tracking HelloWork ──────────────────────
+function resolveHelloWorkUrl(trackingUrl) {
+  try {
+    const parts = trackingUrl.split('/');
+    const b64Token = parts[parts.length - 1];
+    const padded = b64Token + '=='.slice(0, (4 - b64Token.length % 4) % 4);
+    const decoded = Buffer.from(padded, 'base64').toString('utf-8');
+    const urlMatch = decoded.match(/https:\/\/www\.hellowork\.com\/fr-fr\/emplois\/[^\s?&"<>]+\.html/);
+    if (urlMatch) return urlMatch[0];
+  } catch (e) {
+    console.log(`Impossible de décoder l'URL de tracking: ${e.message}`);
+  }
+  return trackingUrl;
+}
+
+// ─── Extraire l'ID de job depuis l'URL ────────────────────────────
+function extractJobId(url) {
+  const match = url.match(/\/(\d+)\.html/);
+  return match ? match[1] : null;
+}
+
 // ─── Logique de postulation HelloWork ─────────────────────────────
 async function applyHelloWork(jobUrl, coverLetter) {
   const browser = await puppeteer.launch({
@@ -97,11 +121,13 @@ async function applyHelloWork(jobUrl, coverLetter) {
     await postulerBtn.click();
     await humanDelay();
 
+    // ── Attendre le formulaire de candidature ──────────────────────
     await page.waitForSelector(
       'input[name="firstname"], input[name="prenom"], input[placeholder*="Prénom" i], form input[type="text"]:first-of-type',
       { timeout: 10000 }
     ).catch(() => console.log('Formulaire standard non trouvé, tentative alternative...'));
 
+    // ── Remplir Prénom ─────────────────────────────────────────────
     const prenomSel = 'input[name="firstname"], input[name="prenom"], input[placeholder*="Prénom" i]';
     if (await page.$(prenomSel)) {
       await page.click(prenomSel, { clickCount: 3 });
@@ -109,6 +135,7 @@ async function applyHelloWork(jobUrl, coverLetter) {
       await humanDelay();
     }
 
+    // ── Remplir Nom ────────────────────────────────────────────────
     const nomSel = 'input[name="lastname"], input[name="nom"], input[placeholder*="Nom" i]';
     if (await page.$(nomSel)) {
       await page.click(nomSel, { clickCount: 3 });
@@ -116,6 +143,7 @@ async function applyHelloWork(jobUrl, coverLetter) {
       await humanDelay();
     }
 
+    // ── Remplir Email ──────────────────────────────────────────────
     const emailSel = 'input[type="email"], input[name="email"], input[placeholder*="email" i]';
     if (await page.$(emailSel)) {
       await page.click(emailSel, { clickCount: 3 });
@@ -123,6 +151,7 @@ async function applyHelloWork(jobUrl, coverLetter) {
       await humanDelay();
     }
 
+    // ── Remplir Téléphone ──────────────────────────────────────────
     const telSel = 'input[type="tel"], input[name="phone"], input[name="telephone"], input[placeholder*="téléphone" i], input[placeholder*="phone" i]';
     if (await page.$(telSel)) {
       await page.click(telSel, { clickCount: 3 });
@@ -130,6 +159,7 @@ async function applyHelloWork(jobUrl, coverLetter) {
       await humanDelay();
     }
 
+    // ── Remplir Lettre de motivation ───────────────────────────────
     const textareaSel = 'textarea[name="message"], textarea[name="coverLetter"], textarea[name="lettre"], textarea[placeholder*="motivation" i], textarea';
     if (await page.$(textareaSel)) {
       await page.click(textareaSel, { clickCount: 3 });
@@ -137,6 +167,7 @@ async function applyHelloWork(jobUrl, coverLetter) {
       await humanDelay();
     }
 
+    // ── Upload CV ──────────────────────────────────────────────────
     const fileInput = await page.$('input[type="file"]');
     if (fileInput) {
       await fileInput.uploadFile(CANDIDAT.cvPath);
@@ -144,6 +175,7 @@ async function applyHelloWork(jobUrl, coverLetter) {
       console.log('CV uploadé ✓');
     }
 
+    // ── Soumettre ──────────────────────────────────────────────────
     const submitSel = 'button[type="submit"], input[type="submit"], button[class*="submit"], button[class*="envoyer" i]';
     const submitBtn = await page.$(submitSel);
     if (!submitBtn) throw new Error('Bouton Submit introuvable');
@@ -151,6 +183,7 @@ async function applyHelloWork(jobUrl, coverLetter) {
     await submitBtn.click();
     await sleep(3000);
 
+    // ── Vérifier confirmation ──────────────────────────────────────
     const pageContent = await page.content();
     const success =
       /merci|candidature.*envo|confirmation|envoyée/i.test(pageContent) ||
@@ -175,8 +208,10 @@ async function applyHelloWork(jobUrl, coverLetter) {
 
 // ─── Routes API ────────────────────────────────────────────────────
 
+// Santé
 app.get('/health', (req, res) => res.json({ status: 'ok', candidat: CANDIDAT.email }));
 
+// Candidature HelloWork
 app.post('/apply', async (req, res) => {
   const { job_url, cover_letter } = req.body;
 
@@ -184,8 +219,29 @@ app.post('/apply', async (req, res) => {
     return res.status(400).json({ error: 'job_url et cover_letter sont requis' });
   }
 
-  console.log(`\n📨 Nouvelle candidature: ${job_url}`);
-  const result = await applyHelloWork(job_url, cover_letter);
+  // Résoudre les tracking URLs HelloWork
+  let actualUrl = job_url;
+  if (job_url.includes('emails.hellowork.com/clic')) {
+    actualUrl = resolveHelloWorkUrl(job_url);
+    console.log(`URL résolue: ${actualUrl}`);
+  }
+
+  // Ignorer les URLs non-emploi (logos, navigation, etc.)
+  if (!actualUrl.includes('/fr-fr/emplois/')) {
+    console.log(`URL ignorée (pas une offre): ${actualUrl}`);
+    return res.json({ success: false, message: 'URL non pertinente', url: actualUrl });
+  }
+
+  // Dédupliquer : ignorer si déjà candidaté à ce job
+  const jobId = extractJobId(actualUrl);
+  if (jobId && jobsAlreadyApplied.has(jobId)) {
+    console.log(`Job ${jobId} déjà traité, ignoré.`);
+    return res.json({ success: false, message: `Déjà candidaté pour le job ${jobId}`, url: actualUrl });
+  }
+  if (jobId) jobsAlreadyApplied.add(jobId);
+
+  console.log(`\n📨 Nouvelle candidature: ${actualUrl}`);
+  const result = await applyHelloWork(actualUrl, cover_letter);
   res.json(result);
 });
 
