@@ -122,13 +122,11 @@ async function applyHelloWork(jobUrl, coverLetter) {
     await postulerBtn.click();
     await humanDelay();
 
-    // ── Attendre le formulaire de candidature ──────────────────────
     await page.waitForSelector(
       'input[name="firstname"], input[name="prenom"], input[placeholder*="Prénom" i], form input[type="text"]:first-of-type',
       { timeout: 10000 }
     ).catch(() => console.log('Formulaire standard non trouvé, tentative alternative...'));
 
-    // ── Remplir Prénom ─────────────────────────────────────────────
     const prenomSel = 'input[name="firstname"], input[name="prenom"], input[placeholder*="Prénom" i]';
     if (await page.$(prenomSel)) {
       await page.click(prenomSel, { clickCount: 3 });
@@ -136,7 +134,6 @@ async function applyHelloWork(jobUrl, coverLetter) {
       await humanDelay();
     }
 
-    // ── Remplir Nom ────────────────────────────────────────────────
     const nomSel = 'input[name="lastname"], input[name="nom"], input[placeholder*="Nom" i]';
     if (await page.$(nomSel)) {
       await page.click(nomSel, { clickCount: 3 });
@@ -144,7 +141,6 @@ async function applyHelloWork(jobUrl, coverLetter) {
       await humanDelay();
     }
 
-    // ── Remplir Email ──────────────────────────────────────────────
     const emailSel = 'input[type="email"], input[name="email"], input[placeholder*="email" i]';
     if (await page.$(emailSel)) {
       await page.click(emailSel, { clickCount: 3 });
@@ -152,7 +148,6 @@ async function applyHelloWork(jobUrl, coverLetter) {
       await humanDelay();
     }
 
-    // ── Remplir Téléphone ──────────────────────────────────────────
     const telSel = 'input[type="tel"], input[name="phone"], input[name="telephone"], input[placeholder*="téléphone" i], input[placeholder*="phone" i]';
     if (await page.$(telSel)) {
       await page.click(telSel, { clickCount: 3 });
@@ -160,7 +155,6 @@ async function applyHelloWork(jobUrl, coverLetter) {
       await humanDelay();
     }
 
-    // ── Remplir Lettre de motivation ───────────────────────────────
     const textareaSel = 'textarea[name="message"], textarea[name="coverLetter"], textarea[name="lettre"], textarea[placeholder*="motivation" i], textarea';
     if (await page.$(textareaSel)) {
       await page.click(textareaSel, { clickCount: 3 });
@@ -168,7 +162,6 @@ async function applyHelloWork(jobUrl, coverLetter) {
       await humanDelay();
     }
 
-    // ── Upload CV ──────────────────────────────────────────────────
     const fileInput = await page.$('input[type="file"]');
     if (fileInput) {
       await fileInput.uploadFile(CANDIDAT.cvPath);
@@ -176,7 +169,6 @@ async function applyHelloWork(jobUrl, coverLetter) {
       console.log('CV uploadé ✓');
     }
 
-    // ── Soumettre ──────────────────────────────────────────────────
     const submitSel = 'button[type="submit"], input[type="submit"], button[class*="submit"], button[class*="envoyer" i]';
     const submitBtn = await page.$(submitSel);
     if (!submitBtn) throw new Error('Bouton Submit introuvable');
@@ -184,7 +176,6 @@ async function applyHelloWork(jobUrl, coverLetter) {
     await submitBtn.click();
     await sleep(3000);
 
-    // ── Vérifier confirmation ──────────────────────────────────────
     const pageContent = await page.content();
     const success =
       /merci|candidature.*envo|confirmation|envoyée/i.test(pageContent) ||
@@ -209,15 +200,25 @@ async function applyHelloWork(jobUrl, coverLetter) {
 
 // ─── Routes API ────────────────────────────────────────────────────
 
-// Santé
 app.get('/health', (req, res) => res.json({ status: 'ok', candidat: CANDIDAT.email }));
 
-// Candidature HelloWork
 app.post('/apply', async (req, res) => {
-  const { job_url, cover_letter } = req.body;
+  let { job_url, cover_letter, url_index } = req.body;
 
   if (!job_url || !cover_letter) {
     return res.status(400).json({ error: 'job_url et cover_letter sont requis' });
+  }
+
+  // Si job_url est un corps d'email (texte long), extraire la bonne URL HelloWork
+  if (job_url.length > 200) {
+    const idx = parseInt(url_index) || 0;
+    const allUrls = [...job_url.matchAll(/https?:\/\/emails\.hellowork\.com\/clic\/[^\s"<>]+/g)].map(m => m[0]);
+    console.log(`URLs trouvées dans le corps: ${allUrls.length}, index demandé: ${idx}`);
+    if (allUrls.length === 0) {
+      return res.status(400).json({ error: 'Aucune URL HelloWork trouvée dans le corps' });
+    }
+    job_url = allUrls[idx] || allUrls[0];
+    console.log(`URL extraite: ${job_url}`);
   }
 
   // Résoudre les tracking URLs HelloWork
@@ -227,13 +228,13 @@ app.post('/apply', async (req, res) => {
     console.log(`URL résolue: ${actualUrl}`);
   }
 
-  // Ignorer les URLs non-emploi (logos, navigation, etc.)
+  // Ignorer les URLs non-emploi
   if (!actualUrl.includes('/fr-fr/emplois/')) {
     console.log(`URL ignorée (pas une offre): ${actualUrl}`);
     return res.json({ success: false, message: 'URL non pertinente', url: actualUrl });
   }
 
-  // Dédupliquer : ignorer si déjà candidaté à ce job
+  // Dédupliquer
   const jobId = extractJobId(actualUrl);
   if (jobId && jobsAlreadyApplied.has(jobId)) {
     console.log(`Job ${jobId} déjà traité, ignoré.`);
