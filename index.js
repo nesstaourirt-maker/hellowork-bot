@@ -64,6 +64,19 @@ function extractJobId(url) {
 
 // ─── Logique de postulation HelloWork ─────────────────────────────
 async function applyHelloWork(jobUrl, coverLetter) {
+    // Timeout global 55s pour rester sous le timeout Make.com
+    const timeout = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Timeout: operation Puppeteer depassee (55s)')), 55000)
+        );
+    try {
+          return await Promise.race([applyHelloWorkCore(jobUrl, coverLetter), timeout]);
+    } catch (err) {
+          console.error('applyHelloWork error:', err.message);
+          return { success: false, message: err.message, url: jobUrl };
+    }
+}
+
+async function applyHelloWorkCore(jobUrl, coverLetter) {
   const browser = await puppeteer.launch({
     headless: true,
     args: [
